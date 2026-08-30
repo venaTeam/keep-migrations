@@ -1,0 +1,175 @@
+# The migration Job — what to add to the Helm chart
+
+The chart that deploys to OpenShift lives outside this repo, so this is the
+paste-ready spec rather than a template. It runs the **keep-migrations image**,
+which is the only artifact that contains migration scripts: the gateway image no
+longer ships `alembic.ini`, `versions/`, or an alembic dependency, and its pods
+have no code path that migrates.
+
+That is why there is no `SKIP_DB_CREATION=true` step here and no ordering
+constraint against the gateway's rollout. There is nothing left to switch off.
+
+---
+
+## 1. `templates/migration-job.yaml`
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Fixed name, NOT generateName: BeforeHookCreation deletes the previous run by
+  # name, and generateName would leave every run's Job behind forever.
+  name: {{ .Release.Name }}-migrate
+  annotations:
+    # These MUST be on the Job's own metadata. Under spec.template.metadata they
+    # apply to the pod, Argo ignores them entirely, and the Job silently becomes
+    # an ordinary Sync-phase resource with no ordering guarantee at all.
+    argocd.argoproj.io/hook: PreSync
+    # BeforeHookCreation deletes the old Job only as the next sync creates its
+    # replacement, so the last run's logs stay readable. HookSucceeded /
+    # HookFailed would destroy exactly the logs you need after a failure.
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  # A failed migration is looked at, not retried blindly.
+  backoffLimit: 0
+  # Must cover the SUM of a release's migrations: `upgrade head` applies every
+  # pending revision inside ONE transaction, so this is not per-migration.
+  # Per-environment -- prod's data makes the same DDL slowest there.
+  activeDeadlineSeconds: {{ .Values.migrations.deadline | default 900 }}
+  template:
+    spec:
+      restartPolicy: Never          # required for a Job pod
+      serviceAccountName: {{ .Values.serviceAccountName }}
+      containers:
+        - name: migrate
+          # The migrations image, NOT the gateway image. It is append-only, so
+          # the current tag always contains every revision ever written --
+          # including every downgrade() needed to walk backwards.
+          image: "{{ .Values.migrations.image }}"
+          args:
+            - "--target"
+            - "{{ .Values.migrations.target | default "head" }}"
+            {{- if .Values.migrations.allowDestructive }}
+            - "--allow-destructive"
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.db.secretName }}   # the same secret the Deployment uses
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+```
+
+## 2. `values.yaml`
+
+Three things move independently, which is what makes rollback declarative: the
+app image, the migrations image, and the schema target.
+
+```yaml
+image:
+  repository: <registry>/keep-api-gateway
+  tag: "1.5"                                  # the app
+
+migrations:
+  image: <registry>/keep-migrations:2026-08-30   # append-only; every revision ever written
+  target: head                                # what the schema should be
+  deadline: 900                               # activeDeadlineSeconds; raise for prod
+  allowDestructive: false
+```
+
+The migrations image is **not** rolled back with the app. Because it is
+append-only, the current tag already contains every `downgrade()` ever written —
+there is no old tag to find or pin.
+
+## 3. The gateway Deployment — no change
+
+Nothing. Pods contain no migration code. If you find `SKIP_DB_CREATION` set on
+the gateway Deployment, it is a leftover and does nothing there; in
+keep-event-handler and keep-workflows the same variable skips the schema *wait*,
+which is a different thing, so never set it globally.
+
+What the gateway does still do is refuse to serve on a schema its models do not
+satisfy: `/readyz` compares the live schema against the tables and columns this
+image declares. It reads no revision and no script — that is what let the scripts
+leave. Extra tables and columns are ignored, so an older image rolled back onto a
+newer schema starts cleanly.
+
+---
+
+## What this buys
+
+```
+Argo sync
+  ├─ PreSync   → migration Job     ← non-zero here = sync stops, nothing deployed
+  ├─ Sync      → Deployment updated, pods roll
+  └─ PostSync
+```
+
+Argo waits for each phase to be healthy before the next, and for a `Job`
+"healthy" means completed successfully — so it genuinely blocks. A failed
+migration leaves the Deployment untouched and the old pods serving.
+
+Before this, all ~14 gateway replicas ran `alembic upgrade head` in gunicorn's
+`on_starting` on every start — including OOM kills, node drains and HPA
+scale-ups — serialized behind an advisory lock, with thirteen of them polling and
+burning their startup-probe budget.
+
+## Things worth knowing before you ship it
+
+**The hook fires on every sync, not every release.** A ConfigMap change or an
+Argo self-heal triggers it too. That is fine only because a run with nothing
+pending is a revision comparison and an exit — `keep-migrate` returns 0 without
+invoking alembic when the database is already at the target.
+
+**Expand/contract becomes mandatory.** PreSync means the DDL lands while the
+*previous* image is still serving, so every migration must be safe against the
+old code.
+
+**A failed sync is silent from the app's side.** No CrashLoop, no pod alerts —
+just an unchanged Deployment and an Argo Application sitting in Failed. That is a
+soft failure (the old version keeps serving), but nothing pages you, and this is
+the one regression against the old behaviour: a failed migration used to page
+someone by accident, via the CrashLoopBackOff. **Ship this with an alert** —
+`argocd-notifications`' `on-sync-failed` is the simplest, or Prometheus on
+`argocd_app_info{sync_status="OutOfSync"}` persisting past N minutes. Name the
+rotation that receives it; whoever owns pod alerts today is not necessarily
+watching Argo.
+
+**Rolling the app back needs no schema change.** Change `image.tag`, commit. The
+Job sees the database already at target and exits 0; pods roll back and `/readyz`
+passes because the extra columns are ignored. One commit.
+
+**Rolling the *schema* back is a second commit** — set `migrations.target` to the
+older revision and `migrations.allowDestructive: true`. Two commits rather than
+one *is* the ordering guarantee: PreSync runs before the Deployment updates, so
+moving both at once would drop the schema under pods still running new code.
+Downgrade one release, not many — long paths break the single-transaction
+guarantee, and most `downgrade()` functions have never executed anywhere.
+
+**After any failed Job, check for invalid indexes.** Four migrations use
+`autocommit_block()` for `CREATE INDEX CONCURRENTLY`; those commit independently,
+so a mid-build failure leaves an INVALID index and the retry's
+`if_not_exists=True` skips rather than rebuilds it — the retry goes green while
+the index stays unused.
+
+```sql
+SELECT c.relname FROM pg_index i
+JOIN pg_class c ON c.oid = i.indexrelid
+WHERE NOT i.indisvalid;
+```
+
+**There is no escape hatch any more.** Unsetting an env var will not make pods
+migrate; the code and the scripts are both gone from that image. If the Job
+cannot run, the fallback is running this image by hand against the database.
+
+## Dry runs
+
+Both are safe against a live database — neither writes.
+
+```bash
+keep-migrate --sql   --target head    # print the SQL, touch nothing
+keep-migrate --check --target head    # exit non-zero if the path is destructive
+```
