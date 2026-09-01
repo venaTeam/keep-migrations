@@ -14,7 +14,14 @@ python = ">=3.11,<4.0"
 alembic = "^1.13.2"
 sqlalchemy = "^2.0.14"
 sqlmodel = "^0.0.22"
+
+# BOTH Postgres drivers, because the Job reads the same secret as the app
+# Deployment and so gets the identical URL string. keep-api-gateway ships both
+# and rewrites nothing, so `postgresql://` (psycopg2) and `postgresql+psycopg://`
+# (v3) are both valid there; shipping one here would break on the other.
 psycopg2-binary = "^2.9"
+psycopg = { version = "^3.2.3", extras = ["binary"] }
+
 click = "^8.1"
 python-dotenv = "^1.0"
 sqlalchemy-utils = "^0.41.0"
