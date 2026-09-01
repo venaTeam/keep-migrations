@@ -1,0 +1,91 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Fixed name, NOT generateName. BeforeHookCreation deletes the previous run by
+  # name; with generateName every run's Job is left behind forever.
+  name: {{ .Release.Name }}-migrate
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: migrate
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    # These MUST be on the Job's own metadata. Under spec.template.metadata they
+    # apply to the pod, Argo ignores them entirely, and this silently becomes an
+    # ordinary Sync-phase resource with no ordering guarantee at all.
+    argocd.argoproj.io/hook: PreSync
+    # BeforeHookCreation deletes the old Job only as the next sync creates its
+    # replacement, so the last run's logs stay readable. HookSucceeded and
+    # HookFailed destroy exactly the logs you need after a failure.
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  # A failed migration is looked at, not retried blindly.
+  backoffLimit: 0
+  # Must cover the SUM of a release's migrations: `upgrade head` applies every
+  # pending revision inside ONE transaction, so this is not a per-migration
+  # budget. Per-environment -- prod's data makes the same DDL slowest there.
+  activeDeadlineSeconds: {{ .Values.migrations.deadline | default 900 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      {{- with .Values.migrations.serviceAccountName | default .Values.serviceAccountName }}
+      serviceAccountName: {{ . }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        # No runAsUser: OpenShift's restricted SCC assigns one from the
+        # namespace range, and hardcoding a UID makes the pod unschedulable.
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          # The migrations image, NOT the app image. It is append-only, so the
+          # current tag contains every revision ever written -- including every
+          # downgrade(). It is never rolled back with the app.
+          image: "{{ .Values.migrations.image.repository }}:{{ .Values.migrations.image.tag }}"
+          imagePullPolicy: {{ .Values.migrations.image.pullPolicy | default "IfNotPresent" }}
+          args:
+            - "--target"
+            - "{{ .Values.migrations.target | default "head" }}"
+            {{- if .Values.migrations.allowDestructive }}
+            - "--allow-destructive"
+            {{- end }}
+          envFrom:
+            # The same secret the app Deployment uses. The container needs
+            # exactly one variable from it: DATABASE_CONNECTION_STRING.
+            - secretRef:
+                name: {{ required "migrations.dbSecretName is required" .Values.migrations.dbSecretName }}
+          {{- with .Values.migrations.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml (.Values.migrations.resources | default dict) | nindent 12 }}
+      {{- with .Values.migrations.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.migrations.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.migrations.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

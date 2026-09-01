@@ -90,6 +90,14 @@ Deliberately no CI job compares the two repos. The check runs where it matters -
 against the real database, on the way into an environment -- and integ gets the
 release before prod does.
 
+## Deploying it
+
+`chart/templates/migration-job.yaml` is the Argo PreSync Job -- copy it into the
+chart that deploys Keep, and copy the `migrations:` block from `chart/values.yaml`
+into that chart's values. `chart/Chart.yaml` exists only so the template can be
+rendered here on its own (`helm template rel chart/`); it is not part of the real
+chart. `docs/chart.md` explains the traps and the rollback procedure.
+
 ## Tests
 
 `pytest tests` -- the revision tests, the CLI, and the advisory lock. One of them,

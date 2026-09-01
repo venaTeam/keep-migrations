@@ -1,0 +1,60 @@
+# Copy the `migrations:` block into your chart's values.yaml, alongside the
+# app's own `image`. The keys below it are scaffolding so this directory can be
+# rendered on its own with `helm template`.
+#
+# The app image, the migrations image and the schema target move independently.
+# That is what makes rollback declarative:
+#
+#   roll the APP back    -> change image.tag only. The Job sees the database
+#                           already at target and exits 0; pods roll back and
+#                           /readyz passes because extra columns are ignored.
+#                           ONE commit.
+#
+#   roll the SCHEMA back -> change migrations.target + allowDestructive.
+#                           A SECOND commit, after the app one -- PreSync runs
+#                           before the Deployment updates, so moving both at
+#                           once would drop the schema under pods still running
+#                           the new code.
+
+migrations:
+  enabled: true
+
+  image:
+    repository: <registry>/keep-migrations
+    # Append-only: this tag holds every revision ever written. Bump it forward
+    # with each release; never roll it back with the app.
+    tag: "2026-09-01"
+    pullPolicy: IfNotPresent
+
+  # What the schema should be. `head` for every normal release. To roll the
+  # schema back, set a specific revision id here AND allowDestructive: true.
+  target: head
+
+  # Guards downgrades. Leave false; set it only in the commit that deliberately
+  # walks the schema backwards, and set it back afterwards.
+  allowDestructive: false
+
+  # activeDeadlineSeconds. Covers the SUM of a release's migrations, not one.
+  # Raise it for prod, where the same DDL is slowest.
+  deadline: 900
+
+  # The secret carrying DATABASE_CONNECTION_STRING -- the same one the app
+  # Deployment consumes. Required.
+  dbSecretName: keep-db
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+  # Optional; all default to unset.
+  # serviceAccountName: ""     # falls back to .Values.serviceAccountName
+  # extraEnv: []
+  # nodeSelector: {}
+  # tolerations: []
+  # affinity: {}
+
+serviceAccountName: keep
+imagePullSecrets: []
