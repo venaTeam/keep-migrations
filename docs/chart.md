@@ -11,73 +11,40 @@ constraint against the gateway's rollout. There is nothing left to switch off.
 
 ---
 
-## 1. `templates/migration-job.yaml`
+## 1. The files
 
-```yaml
-apiVersion: batch/v1
-kind: Job
-metadata:
-  # Fixed name, NOT generateName: BeforeHookCreation deletes the previous run by
-  # name, and generateName would leave every run's Job behind forever.
-  name: {{ .Release.Name }}-migrate
-  annotations:
-    # These MUST be on the Job's own metadata. Under spec.template.metadata they
-    # apply to the pod, Argo ignores them entirely, and the Job silently becomes
-    # an ordinary Sync-phase resource with no ordering guarantee at all.
-    argocd.argoproj.io/hook: PreSync
-    # BeforeHookCreation deletes the old Job only as the next sync creates its
-    # replacement, so the last run's logs stay readable. HookSucceeded /
-    # HookFailed would destroy exactly the logs you need after a failure.
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
-spec:
-  # A failed migration is looked at, not retried blindly.
-  backoffLimit: 0
-  # Must cover the SUM of a release's migrations: `upgrade head` applies every
-  # pending revision inside ONE transaction, so this is not per-migration.
-  # Per-environment -- prod's data makes the same DDL slowest there.
-  activeDeadlineSeconds: {{ .Values.migrations.deadline | default 900 }}
-  template:
-    spec:
-      restartPolicy: Never          # required for a Job pod
-      serviceAccountName: {{ .Values.serviceAccountName }}
-      containers:
-        - name: migrate
-          # The migrations image, NOT the gateway image. It is append-only, so
-          # the current tag always contains every revision ever written --
-          # including every downgrade() needed to walk backwards.
-          image: "{{ .Values.migrations.image }}"
-          args:
-            - "--target"
-            - "{{ .Values.migrations.target | default "head" }}"
-            {{- if .Values.migrations.allowDestructive }}
-            - "--allow-destructive"
-            {{- end }}
-          envFrom:
-            - secretRef:
-                name: {{ .Values.db.secretName }}   # the same secret the Deployment uses
-          resources:
-            requests:
-              cpu: 100m
-              memory: 256Mi
-            limits:
-              memory: 512Mi
-```
+Copy them out of this repo rather than from a snippet here — a second copy in a
+markdown file drifts the moment the template changes.
 
-## 2. `values.yaml`
+| file | where it goes |
+|---|---|
+| `chart/templates/migration-job.yaml` | your chart's `templates/` |
+| the `migrations:` block in `chart/values.yaml` | your chart's `values.yaml` |
+
+`chart/Chart.yaml` is scaffolding so the template renders standalone
+(`helm template rel chart/`); it is not part of your chart.
+
+The only required value is `migrations.dbSecretName` — the secret already
+carrying `DATABASE_CONNECTION_STRING` for the app Deployment. The template fails
+to render without it rather than producing a Job that dies on connect.
+
+## 2. What the values control
 
 Three things move independently, which is what makes rollback declarative: the
 app image, the migrations image, and the schema target.
 
 ```yaml
 image:
-  repository: <registry>/keep-api-gateway
-  tag: "1.5"                                  # the app
+  tag: "1.5"                                     # the app
 
 migrations:
-  image: <registry>/keep-migrations:2026-08-30   # append-only; every revision ever written
-  target: head                                # what the schema should be
-  deadline: 900                               # activeDeadlineSeconds; raise for prod
-  allowDestructive: false
+  image:
+    repository: <registry>/keep-migrations       # append-only: every revision ever written
+    tag: "2026-09-01"
+  target: head                                   # what the schema should be
+  allowDestructive: false                        # required for any downgrade
+  deadline: 900                                  # activeDeadlineSeconds; raise for prod
+  dbSecretName: keep-db
 ```
 
 The migrations image is **not** rolled back with the app. Because it is
