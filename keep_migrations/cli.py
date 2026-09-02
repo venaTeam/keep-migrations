@@ -21,7 +21,9 @@ import alembic.command
 import click
 from alembic.script import ScriptDirectory
 
+from keep_migrations.direction import Direction
 from keep_migrations.runtime import (
+    LockUnavailable,
     get_alembic_config,
     get_db_revision,
     migration_lock,
@@ -61,8 +63,10 @@ def _is_ancestor(script: ScriptDirectory, candidate: str, descendant: str) -> bo
         return False
 
 
-def _direction(script: ScriptDirectory, db_revision: str | None, target: str) -> str:
-    """One of 'upgrade', 'downgrade', 'converged'.
+def _direction(
+    script: ScriptDirectory, db_revision: str | None, target: str
+) -> Direction:
+    """Which direction converges the database on `target`.
 
     A database stamped with a revision this image has never heard of is not a
     direction -- it is a target the image cannot reason about, and guessing would
@@ -70,13 +74,13 @@ def _direction(script: ScriptDirectory, db_revision: str | None, target: str) ->
     """
     if db_revision is None:
         # Fresh database: no alembic_version, nothing to compare.
-        return "upgrade"
+        return Direction.UPGRADE
     if db_revision == target:
-        return "converged"
+        return Direction.CONVERGED
     if _is_ancestor(script, db_revision, target):
-        return "upgrade"
+        return Direction.UPGRADE
     if _is_ancestor(script, target, db_revision):
-        return "downgrade"
+        return Direction.DOWNGRADE
     raise click.ClickException(
         f"Database revision '{db_revision}' and target '{target}' are on divergent "
         "branches, or the database was stamped by an image newer than this one. "
@@ -84,7 +88,9 @@ def _direction(script: ScriptDirectory, db_revision: str | None, target: str) ->
     )
 
 
-def _offline_sql(config, db_revision: str | None, target: str, direction: str) -> str:
+def _offline_sql(
+    config, db_revision: str | None, target: str, direction: Direction
+) -> str:
     """The SQL the run would emit, without touching the database.
 
     Alembic writes offline SQL to stdout, so capture it rather than plumb a buffer
@@ -97,7 +103,7 @@ def _offline_sql(config, db_revision: str | None, target: str, direction: str) -
     span = f"{db_revision or 'base'}:{target}"
     try:
         sys.stdout = buffer
-        if direction == "downgrade":
+        if direction is Direction.DOWNGRADE:
             alembic.command.downgrade(config, span, sql=True)
         else:
             alembic.command.upgrade(config, span, sql=True)
@@ -124,6 +130,17 @@ def _destructive_reason(sql: str) -> str | None:
             "an empty downgrade(), so this reports success while changing nothing"
         )
     return None
+
+
+def _refuse_unguarded_downgrade(direction: Direction, allow_destructive: bool) -> None:
+    """A downgrade needs `--allow-destructive`. Checked before taking the lock
+    and again under it, since the direction can change while waiting."""
+    if direction is Direction.DOWNGRADE and not allow_destructive:
+        raise click.ClickException(
+            "Refusing to downgrade without --allow-destructive. Downgrade one "
+            "release, not many: long paths break the single-transaction guarantee "
+            "and most downgrade() functions have never run anywhere."
+        )
 
 
 @click.command()
@@ -167,7 +184,7 @@ def main(target: str, as_sql: bool, check: bool, allow_destructive: bool) -> Non
 
     # The hook fires on every sync, not every release, so the common case is
     # nothing pending: exit without invoking alembic at all.
-    if direction == "converged":
+    if direction is Direction.CONVERGED:
         logger.info("Database is already at the target; nothing to do")
         sys.exit(EXIT_OK)
 
@@ -183,26 +200,40 @@ def main(target: str, as_sql: bool, check: bool, allow_destructive: bool) -> Non
             logger.info("Path is safe to run unattended")
         sys.exit(EXIT_OK)
 
-    if direction == "downgrade" and not allow_destructive:
-        raise click.ClickException(
-            "Refusing to downgrade without --allow-destructive. Downgrade one "
-            "release, not many: long paths break the single-transaction guarantee "
-            "and most downgrade() functions have never run anywhere."
-        )
+    _refuse_unguarded_downgrade(direction, allow_destructive)
 
-    with migration_lock():
-        # Re-read under the lock: a concurrent run may have converged already.
-        db_revision = get_db_revision()
-        if _direction(script, db_revision, target_revision) == "converged":
-            logger.info("Another run reached the target while we waited; nothing to do")
-            sys.exit(EXIT_OK)
-        if direction == "downgrade":
-            alembic.command.downgrade(config, target_revision)
-        else:
-            alembic.command.upgrade(config, target_revision)
+    try:
+        _converge(config, script, target_revision, allow_destructive)
+    except LockUnavailable as exc:
+        # Raised on __enter__, so this has to wrap the `with`, not the call.
+        raise click.ClickException(str(exc))
 
     logger.info("Database converged on %s", target_revision)
     sys.exit(EXIT_OK)
+
+
+def _converge(config, script, target_revision: str, allow_destructive: bool) -> None:
+    """Take the lock, re-decide, and walk. Split out so the LockUnavailable
+    handler above wraps the whole `with`, including its __enter__."""
+    with migration_lock():
+        # Re-read AND re-decide under the lock. Waiting for it can take as long
+        # as MIGRATION_LOCK_TIMEOUT, and whoever held it was migrating -- so the
+        # direction computed before the wait describes a database that no longer
+        # exists. Acting on it could walk the schema the wrong way.
+        db_revision = get_db_revision()
+        direction = _direction(script, db_revision, target_revision)
+        if direction is Direction.CONVERGED:
+            logger.info("Another run reached the target while we waited; nothing to do")
+            sys.exit(EXIT_OK)
+        # The guard is re-applied for the same reason: a direction that was an
+        # upgrade before the wait can be a downgrade after it.
+        _refuse_unguarded_downgrade(direction, allow_destructive)
+        logger.info("Direction under the lock: %s (database=%s)", direction, db_revision)
+
+        if direction is Direction.DOWNGRADE:
+            alembic.command.downgrade(config, target_revision)
+        else:
+            alembic.command.upgrade(config, target_revision)
 
 
 if __name__ == "__main__":

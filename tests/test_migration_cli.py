@@ -176,6 +176,75 @@ def test_converged_is_rechecked_under_the_lock():
     upgrade.assert_not_called()
 
 
+def _run_with_revisions(revisions, args=None, ancestry=None):
+    """Like `_run`, but `get_db_revision` returns a different answer each call --
+    the shape that matters once the lock can make us wait."""
+    seq = iter(revisions)
+    with patch.object(
+        migrations, "script_directory", return_value=_script(ancestry or LINE)
+    ), patch.object(
+        migrations, "get_db_revision", side_effect=lambda: next(seq)
+    ), patch.object(
+        migrations, "get_alembic_config", return_value=MagicMock()
+    ), patch.object(
+        migrations, "migration_lock"
+    ), patch(
+        "alembic.command.upgrade"
+    ) as upgrade, patch(
+        "alembic.command.downgrade"
+    ) as downgrade:
+        result = CliRunner().invoke(migrations.main, args or [])
+    return result, upgrade, downgrade
+
+
+def test_direction_is_recalculated_under_the_lock():
+    """Waiting for the lock can take as long as MIGRATION_LOCK_TIMEOUT, and
+    whoever held it was migrating -- so the direction decided before the wait
+    describes a database that no longer exists. Here the target is an upgrade
+    before the wait and a downgrade after it: acting on the stale direction would
+    upgrade a database that is already past the target."""
+    result, upgrade, downgrade = _run_with_revisions(
+        ["rev1", "rev3"], args=["--target", "rev2", "--allow-destructive"]
+    )
+    assert result.exit_code == 0
+    upgrade.assert_not_called()
+    downgrade.assert_called_once()
+
+
+def test_the_downgrade_guard_is_reapplied_under_the_lock():
+    """Same recalculation, without --allow-destructive: a direction that becomes
+    a downgrade while we waited must be refused, not run."""
+    result, upgrade, downgrade = _run_with_revisions(
+        ["rev1", "rev3"], args=["--target", "rev2"]
+    )
+    assert result.exit_code == 1
+    assert "--allow-destructive" in result.output
+    upgrade.assert_not_called()
+    downgrade.assert_not_called()
+
+
+def test_lock_unavailable_fails_the_run():
+    """The lock raises rather than letting a second run migrate alongside the
+    first. It surfaces as a clean CLI error, not a traceback."""
+    with patch.object(
+        migrations, "script_directory", return_value=_script(LINE)
+    ), patch.object(
+        migrations, "get_db_revision", return_value="rev1"
+    ), patch.object(
+        migrations, "get_alembic_config", return_value=MagicMock()
+    ), patch.object(
+        migrations,
+        "migration_lock",
+        side_effect=migrations.LockUnavailable("another process holds it"),
+    ), patch(
+        "alembic.command.upgrade"
+    ) as upgrade:
+        result = CliRunner().invoke(migrations.main, [])
+    assert result.exit_code == 1
+    assert "another process holds it" in result.output
+    upgrade.assert_not_called()
+
+
 def test_destructive_reason_ignores_sql_comments():
     """Alembic's offline output is mostly `-- Running upgrade ...` comment lines;
     a no-op downgrade must still be recognised through them."""

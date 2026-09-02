@@ -26,6 +26,7 @@ import alembic.config
 from alembic.script import ScriptDirectory
 from dotenv import find_dotenv, load_dotenv
 from sqlalchemy import create_engine, text
+from sqlalchemy import inspect as sa_inspect
 
 # In the Job the connection string arrives from the secret via envFrom; locally
 # it lives in .env, the same way `keep` picks it up.
@@ -84,21 +85,37 @@ def script_directory() -> "ScriptDirectory | None":
 
 
 def get_db_revision() -> str | None:
-    """The revision stamped in the database, or None if `alembic_version` does
-    not exist or is empty.
+    """The revision stamped in the database, or None if `alembic_version` is
+    absent or empty.
 
-    Queried directly rather than via `inspect()`, which is a catalog scan.
+    Errors are deliberately NOT swallowed. Returning None for any failure makes
+    a connection, authentication or permission error indistinguishable from a
+    fresh database -- and `_direction` answers "fresh database" with a full
+    upgrade from base, against a database that may already be populated. Only a
+    genuinely missing or empty table means None; everything else fails with its
+    real message.
     """
-    try:
-        with get_engine().connect() as conn:
-            row = conn.execute(text("SELECT version_num FROM alembic_version")).first()
-    except Exception:
-        logger.debug("Could not read alembic_version", exc_info=True)
+    engine = get_engine()
+    if not sa_inspect(engine).has_table("alembic_version"):
+        logger.info("No alembic_version table; treating the database as new")
         return None
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT version_num FROM alembic_version")).first()
     if not row:
         logger.info("alembic_version is empty; no stamped revision")
         return None
     return row[0]
+
+
+class LockUnavailable(RuntimeError):
+    """The advisory lock could not be taken, so exclusivity cannot be guaranteed.
+
+    Never proceed without it. The gateway used to, because a pod that refuses to
+    start is worse than a small risk -- but this is a Job, and a failed PreSync
+    hook stops the sync and leaves the running pods untouched. Two Jobs applying
+    the same DDL concurrently is exactly the collision the lock exists to
+    prevent.
+    """
 
 
 @contextmanager
@@ -106,8 +123,9 @@ def migration_lock():
     """Serialize migrations with a Postgres advisory lock.
 
     The Job should be the only writer, but the lock still matters: a concurrent
-    Argo sync, a retried Job, or a pod that still has SKIP_DB_CREATION unset
-    would otherwise attempt the same DDL and fail with "already exists".
+    Argo sync or a retried Job would otherwise attempt the same DDL and fail with
+    "already exists". Raises `LockUnavailable` rather than continuing if the lock
+    cannot be taken.
 
     No-op on non-Postgres dialects, where there are no concurrent writers.
     """
@@ -130,23 +148,17 @@ def migration_lock():
                     ).scalar()
                 )
                 conn.commit()
-            except Exception:
-                logger.warning(
-                    "Error acquiring the migration advisory lock; proceeding without it",
-                    exc_info=True,
-                )
-                yield False
-                return
+            except Exception as exc:
+                raise LockUnavailable(
+                    f"Could not acquire the migration advisory lock: {exc}"
+                ) from exc
             if acquired:
                 break
             if time.monotonic() >= deadline:
-                logger.warning(
-                    "Could not acquire the migration advisory lock within %ss; "
-                    "proceeding without it",
-                    MIGRATION_LOCK_TIMEOUT,
+                raise LockUnavailable(
+                    f"Another process has held the migration lock for more than "
+                    f"{MIGRATION_LOCK_TIMEOUT}s. Refusing to migrate alongside it."
                 )
-                yield False
-                return
             logger.info("Another process holds the migration lock; waiting")
             time.sleep(MIGRATION_LOCK_POLL_SECONDS)
 
