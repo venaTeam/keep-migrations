@@ -58,7 +58,8 @@ migrations:
   allowDestructive: false
 
   # activeDeadlineSeconds. Covers the SUM of a release's migrations, not one.
-  # Raise it for prod, where the same DDL is slowest.
+  # Raise it for prod, where the same DDL is slowest. Keep it above the lock
+  # timeout in extraEnv below.
   deadline: 900
 
   # The secret carrying DATABASE_CONNECTION_STRING -- the same one the app
@@ -72,9 +73,17 @@ migrations:
     limits:
       memory: 512Mi
 
+  extraEnv:
+    # Must stay BELOW `deadline` above. The default lock wait is 3600s, so with a
+    # 900s deadline Kubernetes kills the Job first and you get a bare
+    # DeadlineExceeded with nothing in the logs -- instead of "another process
+    # has held the migration lock for more than Ns", which tells you a concurrent
+    # sync is the cause rather than a slow migration.
+    - name: KEEP_MIGRATION_LOCK_TIMEOUT_SECONDS
+      value: "600"
+
   # Optional; all default to unset.
   # serviceAccountName: ""     # falls back to .Values.serviceAccountName
-  # extraEnv: []
   # nodeSelector: {}
   # tolerations: []
   # affinity: {}
