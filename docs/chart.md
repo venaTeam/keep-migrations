@@ -84,7 +84,31 @@ The migrations image is **not** rolled back with the app. Because it is
 append-only, the current tag already contains every `downgrade()` ever written —
 there is no old tag to find or pin.
 
-## 3. The gateway Deployment — no change
+## 3. Turning it on
+
+`migrations.enabled` defaults to **false**, so merging the template changes
+nothing — it renders no Job and the sync behaves exactly as it does today.
+
+Enable it one environment at a time, and **enable it before deploying the new
+gateway image**, not after:
+
+| step | state | what it proves |
+|---|---|---|
+| 1 | template merged, `enabled: false` | nothing rendered, no risk |
+| 2 | `enabled: true`, **old** gateway image | the Job runs, finds nothing pending, exits 0. Image pull, db secret, RBAC and PreSync ordering all verified against a real sync, with no schema change |
+| 3 | new gateway image | its pods no longer migrate; the Job already is |
+| 4 | repeat 2–3 for prep, then prod | |
+
+Step 2 is safe to leave running for as long as you like: the old pods still
+migrate at startup, and both they and the Job take advisory lock
+`8274419300112233`, so they serialize rather than collide.
+
+Do **not** deploy the new gateway image while this is still false. That image
+contains no migration code, so nothing would migrate at all. A release with no
+pending revisions survives it; the next one that adds a column leaves the new
+pods stuck at 503 on `/readyz`.
+
+## 4. The gateway Deployment — no change
 
 Nothing. Pods contain no migration code. If you find `SKIP_DB_CREATION` set on
 the gateway Deployment, it is a leftover and does nothing there; in

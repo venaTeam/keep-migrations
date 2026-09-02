@@ -17,7 +17,30 @@
 #                           the new code.
 
 migrations:
-  enabled: true
+  # OFF by default, so merging the template changes nothing: with this false the
+  # Job is not rendered at all and the sync behaves exactly as it does today.
+  #
+  # Turn it on in this order, one environment at a time:
+  #
+  #   1. Merge the template with enabled: false. Renders nothing. No risk.
+  #
+  #   2. Set enabled: true in integ while the OLD gateway image is still
+  #      deployed. The Job runs, finds nothing pending, and exits 0 -- so it
+  #      proves the image pull, the db secret, RBAC and the PreSync ordering
+  #      without changing any schema. The old pods still migrate at startup as a
+  #      backstop, and both use advisory lock 8274419300112233, so they
+  #      serialize rather than collide.
+  #
+  #   3. Only then roll the new gateway image in integ. Its pods no longer
+  #      migrate; the Job already is.
+  #
+  #   4. Repeat 2 and 3 for prep, then prod.
+  #
+  # Do NOT deploy the new gateway image with this still false: that image has no
+  # migration code, so nothing would migrate at all. A release with no pending
+  # revisions survives it, but the next one adding a column leaves the new pods
+  # stuck at 503 on /readyz.
+  enabled: false
 
   image:
     repository: <registry>/keep-migrations
