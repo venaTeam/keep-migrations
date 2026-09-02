@@ -1,4 +1,9 @@
-{{- if .Values.migrations.enabled }}
+{{- /*
+  Parenthesised so an absent `migrations:` block is nil rather than a nil-pointer
+  error. Without it, copying this template in without its values fails the whole
+  chart's render -- taking the app down with a Job that was meant to be off.
+*/ -}}
+{{- if (.Values.migrations).enabled }}
 apiVersion: batch/v1
 kind: Job
 metadata:
