@@ -1,47 +1,18 @@
-# Copy the `migrations:` block into keep-helm's values.yaml, alongside
-# `workflows:`. The keys below it are scaffolding so this directory renders on
-# its own with `helm template rel chart/`.
+# Paste this block into keep-helm's values.yaml, alongside `workflows:`.
+# `secrets: []` already exists there -- it is repeated here only so this
+# directory renders on its own.
 #
 # The app image, the migrations image and the schema target move independently.
 # That is what makes rollback declarative:
 #
 #   roll the APP back    -> change its image.tag only. The Job sees the database
-#                           already at target and exits 0; pods roll back and
-#                           /readyz passes because extra columns are ignored.
-#                           ONE commit.
-#
-#   roll the SCHEMA back -> change migrations.target + allowDestructive.
-#                           A SECOND commit, after the app one -- PreSync runs
-#                           before the Deployment updates, so moving both at
-#                           once would drop the schema under pods still running
-#                           the new code.
+#                           already at target and exits 0. ONE commit.
+#   roll the SCHEMA back -> change target + allowDestructive, in a SECOND commit
+#                           after the app one. PreSync runs before the Deployment
+#                           updates, so moving both at once would drop the schema
+#                           under pods still running the new code.
 
 migrations:
-  # OFF by default, so merging the template changes nothing: with this false the
-  # Job is not rendered at all and the sync behaves exactly as it does today.
-  #
-  # Turn it on in this order, one environment at a time:
-  #
-  #   1. Merge the template with enabled: false. Renders nothing. No risk.
-  #
-  #   2. Set enabled: true in integ while the OLD gateway image is still
-  #      deployed. The Job runs, finds nothing pending, and exits 0 -- so it
-  #      proves the image pull, the db secret, RBAC and the PreSync ordering
-  #      without changing any schema. The old pods still migrate at startup as a
-  #      backstop, and both use advisory lock 8274419300112233, so they
-  #      serialize rather than collide.
-  #
-  #   3. Only then roll the new gateway image in integ. Its pods no longer
-  #      migrate; the Job already is.
-  #
-  #   4. Repeat 2 and 3 for prep, then prod.
-  #
-  # Do NOT deploy the new gateway image with this still false: that image has no
-  # migration code, so nothing would migrate at all. A release with no pending
-  # revisions survives it, but the next one adding a column leaves the new pods
-  # stuck at 503 on /readyz.
-  enabled: false
-
   image:
     repository: 8200artifactory.d8200.mil/docker-virtual/vena/keep/keep-migrations
     # Append-only: this tag holds every revision ever written. Bump it forward
@@ -50,41 +21,38 @@ migrations:
     pullPolicy: Always
 
   # What the schema should be. `head` for every normal release. To roll the
-  # schema back, set a specific revision id here AND allowDestructive: true.
+  # schema back, put a specific revision id here AND set allowDestructive: true.
   target: head
 
-  # Guards downgrades. Leave false; set it only in the commit that deliberately
-  # walks the schema backwards, and set it back afterwards.
+  # Guards downgrades. Set it only in the commit that deliberately walks the
+  # schema backwards, and unset it afterwards.
   allowDestructive: false
 
-  # activeDeadlineSeconds. Covers the SUM of a release's migrations, not one.
-  # Raise it for prod, where the same DDL is slowest. Keep it above the lock
-  # timeout in env below.
+  # activeDeadlineSeconds: how long Kubernetes lets the Job run. Covers the SUM
+  # of a release's migrations, not the slowest one. Raise it for prod, where the
+  # same DDL is slowest. Must stay ABOVE the lock timeout below.
   deadline: 900
 
   env:
-    # The one thing this container actually needs. Same secret and key the
-    # workflows Deployment reads it from -- the Job must migrate exactly the
-    # database the services talk to.
+    # The one thing this container needs. Same secret and key the workflows
+    # Deployment reads, so the Job migrates exactly the database the services
+    # talk to.
     DATABASE_CONNECTION_STRING:
       secretKeyRef:
         name: postgres-credentials
         key: DATABASE_CONNECTION_STRING_ALERTS
 
-    # Must stay BELOW `deadline` above. The default lock wait is 3600s, so with a
-    # 900s deadline Kubernetes kills the Job first and you get a bare
+    # Must stay BELOW `deadline`. The default lock wait is 3600s, so with a 900s
+    # deadline Kubernetes kills the Job first and you get a bare
     # DeadlineExceeded with nothing in the logs -- instead of "another process
-    # has held the migration lock for more than Ns", which tells you a concurrent
-    # sync is the cause rather than a slow migration.
+    # has held the migration lock for more than Ns", which names the cause.
     KEEP_MIGRATION_LOCK_TIMEOUT_SECONDS:
       value: "600"
 
-  # OPTIONAL -- delete the block and no resources are rendered. Worth keeping for
-  # two reasons: an OpenShift namespace with a LimitRange or ResourceQuota
-  # rejects a pod that declares none, and without requests the pod is BestEffort
-  # QoS, i.e. first evicted under node pressure -- which mid-DDL means a failed
-  # sync. Same shape as workflows.resources, smaller because this opens one
-  # connection and runs DDL.
+  # Optional: delete the block and no resources are rendered. Worth keeping --
+  # an OpenShift namespace with a LimitRange or ResourceQuota rejects a pod
+  # declaring none, and without requests the pod is BestEffort QoS, first evicted
+  # under node pressure, which mid-DDL is a failed sync.
   resources:
     limits:
       cpu: "1"
@@ -93,24 +61,5 @@ migrations:
       cpu: "100m"
       memory: 256Mi
 
-  # Optional; all default to unset.
-  # serviceAccountName: ""     # defaults to "keep", as workflows uses
-  # nodeSelector: {}
-  # tolerations: []
-  # affinity: {}
-
-# --- DO NOT COPY BELOW THIS LINE --------------------------------------------
-# These already exist in keep-helm's values.yaml. They are here only so this
-# directory renders on its own. The template treats all three as optional:
-# without `global` it omits the namespace (Helm and Argo place the Job in the
-# destination namespace anyway), and without `secrets` it omits the bulk envFrom.
-global:
-  keep:
-    namespace: keep
-
-# Empty in keep-helm today. The connection string comes through `env` above with
-# an explicit secretKeyRef, the way workflows gets it -- so nothing here reads
-# this list, and the optional envFrom in the template stays unrendered.
+# --- already in keep-helm; here only so this directory renders ---------------
 secrets: []
-
-imagePullSecrets: []

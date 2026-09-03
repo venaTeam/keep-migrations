@@ -1,28 +1,15 @@
 {{- /* --------------------------------------------------------------
   KEEP-MIGRATIONS JOB
-  Argo PreSync hook. Runs once per release, before any pod of the new
-  ReplicaSet exists; a failure stops the sync and leaves the running
+  Argo PreSync hook: runs once per release, before any pod of the new
+  ReplicaSet exists. A failure stops the sync and leaves the running
   pods untouched.
-
-  Follows workflows.yaml: same label set, same namespace, same
-  image/resources/env shapes, same empty securityContext. What a
-  Deployment has and a run-to-completion Job cannot are left out --
-  no replicas, no ports, no probes, no Service, no Route -- and
-  restartPolicy is Never rather than Always.
-
-  Parenthesised guard so an absent `migrations:` block is nil rather
-  than a nil-pointer error, which would fail the whole chart's render.
   ------------------------------------------------------------- */}}
-{{- if (.Values.migrations).enabled }}
 apiVersion: batch/v1
 kind: Job
 metadata:
   {{- /* Fixed name, NOT generateName: BeforeHookCreation deletes the previous
-         run by name, and generateName leaves every run's Job behind forever. */}}
+         run by name, and generateName leaves every run behind forever. */}}
   name: keep-migrate
-  {{- /* Set for consistency with workflows.yaml, but optional: Helm and Argo
-         already create this in the release's destination namespace, so an
-         absent global.keep just omits the field rather than failing. */}}
   {{- with (($.Values.global).keep).namespace }}
   namespace: {{ . }}
   {{- end }}
@@ -30,28 +17,24 @@ metadata:
     app.kubernetes.io/instance: keep
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/name: keep
-    {{- /* Quoted and defaulted: an unset appVersion renders as null here, and
-           Kubernetes rejects a null label value -- so the Job would fail to
-           apply over a Chart.yaml field. Nothing outside values.yaml is
-           required. */}}
     app.kubernetes.io/version: {{ $.Chart.AppVersion | default $.Chart.Version | quote }}
     helm.sh/chart: {{ $.Chart.Name }}-{{ $.Chart.Version }}
     keep-component: migrations
   annotations:
-    {{- /* These MUST be on the Job's own metadata. Under spec.template.metadata
-           they apply to the pod, Argo ignores them entirely, and this silently
-           becomes an ordinary Sync-phase resource with no ordering guarantee. */}}
+    {{- /* MUST be on the Job's own metadata. Under spec.template.metadata they
+           apply to the pod, Argo ignores them, and this silently becomes an
+           ordinary Sync-phase resource with no ordering guarantee. */}}
     argocd.argoproj.io/hook: PreSync
-    {{- /* BeforeHookCreation deletes the old Job only as the next sync creates
-           its replacement, so the last run's logs stay readable. HookSucceeded
-           and HookFailed destroy exactly the logs you need after a failure. */}}
+    {{- /* Deletes the old Job only as the next sync creates its replacement, so
+           the last run's logs stay readable. HookSucceeded/HookFailed destroy
+           exactly the logs you need after a failure. */}}
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 spec:
   {{- /* A failed migration is looked at, not retried blindly. */}}
   backoffLimit: 0
-  {{- /* Covers the SUM of a release's migrations: `upgrade head` applies every
-         pending revision inside ONE transaction. Keep it above the lock timeout
-         in env below, or a concurrent sync dies unexplained. */}}
+  {{- /* Covers the SUM of a release's migrations -- `upgrade head` applies every
+         pending revision in ONE transaction. Keep above the lock timeout in env,
+         or a concurrent sync dies as an unexplained DeadlineExceeded. */}}
   activeDeadlineSeconds: {{ .Values.migrations.deadline | default 900 }}
   template:
     metadata:
@@ -60,24 +43,17 @@ spec:
         app.kubernetes.io/name: keep
         keep-component: migrations
     spec:
-      serviceAccountName: {{ .Values.migrations.serviceAccountName | default "keep" }}
+      serviceAccountName: keep
       restartPolicy: Never
       schedulerName: default-scheduler
       terminationGracePeriodSeconds: 30
       dnsPolicy: ClusterFirst
       securityContext: {}
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
       containers:
-        # ---------------------------------------------------------
-        # Migration runner. Applies pending revisions, then exits.
-        # ---------------------------------------------------------
         - name: migrate
-          {{- /* The migrations image, NOT an app image. Append-only: the current
-                 tag holds every revision ever written, including every
-                 downgrade(), so it is never rolled back with the app. */}}
+          {{- /* The migrations image, NOT an app image. Append-only: this tag
+                 holds every revision ever written, including every downgrade(),
+                 so it is never rolled back with the app. */}}
           image: "{{ .Values.migrations.image.repository }}:{{ .Values.migrations.image.tag }}"
           imagePullPolicy: {{ .Values.migrations.image.pullPolicy | default "Always" }}
           args:
@@ -86,99 +62,24 @@ spec:
             {{- if .Values.migrations.allowDestructive }}
             - "--allow-destructive"
             {{- end }}
-          # ---------------------------------------------------------
-          # RESOURCES (cpu / memory / ephemeral-storage)
-          # ---------------------------------------------------------
           {{- with .Values.migrations.resources }}
           resources:
-            {{- if .limits }}
-            limits:
-              cpu: "{{ .limits.cpu }}"
-              memory: "{{ .limits.memory }}"
-              {{- if .limits.ephemeralStorage }}
-              ephemeral-storage: "{{ .limits.ephemeralStorage }}"
-              {{- end }}
-            {{- end }}
-            {{- if .requests }}
-            requests:
-              cpu: "{{ .requests.cpu }}"
-              memory: "{{ .requests.memory }}"
-              {{- if .requests.ephemeralStorage }}
-              ephemeral-storage: "{{ .requests.ephemeralStorage }}"
-              {{- end }}
-            {{- end }}
+            {{- toYaml . | nindent 12 }}
           {{- end }}
-          # ---------------------------------------------------------
-          # ENVIRONMENT VARIABLES (map or list -- same shapes as workflows)
-          # ---------------------------------------------------------
-          {{- $env := .Values.migrations.env }}
-          {{- if $env }}
+          {{- with .Values.migrations.env }}
           env:
-          {{- if eq (kindOf $env) "map" }}
-          {{- range $k, $v := $env }}
-            - name: {{ $k }}
+            {{- range $name, $v := . }}
+            - name: {{ $name }}
               {{- if $v.value }}
               value: {{ $v.value | quote }}
               {{- else if $v.secretKeyRef }}
               valueFrom:
                 secretKeyRef:
-                  {{- /* if/else, not `default`: a pipeline evaluates BOTH sides,
-                         so `default (index .Values.secrets 0).name` errors with
-                         "slice index out of range" whenever secrets is [] --
-                         even when the name is supplied right here. */}}
-                  {{- if $v.secretKeyRef.name }}
                   name: {{ $v.secretKeyRef.name }}
-                  {{- else }}
-                  name: {{ (index $.Values.secrets 0).name }}
-                  {{- end }}
                   key: {{ $v.secretKeyRef.key }}
-              {{- else if $v.valueFrom }}
-              valueFrom:
-                {{ toYaml $v.valueFrom | nindent 16 }}
               {{- end }}
-          {{- end }}
-          {{- else }}
-          {{- range $env }}
-            - name: {{ .name }}
-              {{- if .value }}
-              value: {{ .value | quote }}
-              {{- else if .secretKeyRef }}
-              valueFrom:
-                secretKeyRef:
-                  {{- if .secretKeyRef.name }}
-                  name: {{ .secretKeyRef.name }}
-                  {{- else }}
-                  name: {{ (index $.Values.secrets 0).name }}
-                  {{- end }}
-                  key: {{ .secretKeyRef.key }}
-              {{- else if .valueFrom }}
-              valueFrom:
-                {{ toYaml .valueFrom | nindent 16 }}
-              {{- end }}
-          {{- end }}
-          {{- end }}
-          {{- end }}
-          {{- /* Optional bulk import, as in workflows.yaml. The connection string
-                 normally arrives through `env` above, the way workflows gets it
-                 -- so this stays empty in practice, since `secrets` is []. */}}
-          {{- if .Values.secrets }}
-          envFrom:
-            - secretRef:
-                name: {{ (index .Values.secrets 0).name | trunc 63 | trimSuffix "-" }}
+            {{- end }}
           {{- end }}
           terminationMessagePath: /dev/termination-log
           terminationMessagePolicy: File
           securityContext: {}
-      {{- with .Values.migrations.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.migrations.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.migrations.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-{{- end }}
