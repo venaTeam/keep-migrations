@@ -13,6 +13,23 @@ constraint against the gateway's rollout. There is nothing left to switch off.
 
 ## 1. The files
 
+It follows `templates/workflows.yaml`'s conventions, so it should read as one of
+the family: same label set, same `global.keep.namespace`, same
+`image.repository`/`tag`/`pullPolicy` shape, the same map-or-list `env` handling,
+`resources` with optional `ephemeralStorage`, `serviceAccountName: keep`, empty
+`securityContext`, and `terminationMessagePath`/`Policy`.
+
+What a Deployment has and a run-to-completion Job cannot: no `replicas`,
+`selector`, `ports`, probes, Service or Route, and `restartPolicy: Never` rather
+than `Always`. No volumes either — this container writes nothing.
+
+One deliberate difference from workflows.yaml: `envFrom` is **not** conditional
+on `env` being absent. This container's single requirement is
+`DATABASE_CONNECTION_STRING` from `secrets[0]`, so making it conditional would
+mean adding one env var silently drops the connection string and the Job dies on
+connect.
+
+
 Copy them out of this repo rather than from a snippet here — a second copy in a
 markdown file drifts the moment the template changes.
 

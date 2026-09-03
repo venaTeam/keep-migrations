@@ -1,90 +1,155 @@
-{{- /*
-  Parenthesised so an absent `migrations:` block is nil rather than a nil-pointer
-  error. Without it, copying this template in without its values fails the whole
-  chart's render -- taking the app down with a Job that was meant to be off.
-*/ -}}
+{{- /* --------------------------------------------------------------
+  KEEP-MIGRATIONS JOB
+  Argo PreSync hook. Runs once per release, before any pod of the new
+  ReplicaSet exists; a failure stops the sync and leaves the running
+  pods untouched.
+
+  Follows workflows.yaml: same label set, same namespace, same
+  image/resources/env shapes, same empty securityContext. What a
+  Deployment has and a run-to-completion Job cannot are left out --
+  no replicas, no ports, no probes, no Service, no Route -- and
+  restartPolicy is Never rather than Always.
+
+  Parenthesised guard so an absent `migrations:` block is nil rather
+  than a nil-pointer error, which would fail the whole chart's render.
+  ------------------------------------------------------------- */}}
 {{- if (.Values.migrations).enabled }}
 apiVersion: batch/v1
 kind: Job
 metadata:
-  # Fixed name, NOT generateName. BeforeHookCreation deletes the previous run by
-  # name; with generateName every run's Job is left behind forever.
-  name: {{ .Release.Name }}-migrate
+  {{- /* Fixed name, NOT generateName: BeforeHookCreation deletes the previous
+         run by name, and generateName leaves every run's Job behind forever. */}}
+  name: keep-migrate
+  namespace: {{ $.Values.global.keep.namespace }}
   labels:
-    app.kubernetes.io/name: {{ .Chart.Name }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/component: migrate
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: keep
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/version: {{ $.Chart.AppVersion }}
+    helm.sh/chart: {{ $.Chart.Name }}-{{ $.Chart.Version }}
+    keep-component: migrations
   annotations:
-    # These MUST be on the Job's own metadata. Under spec.template.metadata they
-    # apply to the pod, Argo ignores them entirely, and this silently becomes an
-    # ordinary Sync-phase resource with no ordering guarantee at all.
+    {{- /* These MUST be on the Job's own metadata. Under spec.template.metadata
+           they apply to the pod, Argo ignores them entirely, and this silently
+           becomes an ordinary Sync-phase resource with no ordering guarantee. */}}
     argocd.argoproj.io/hook: PreSync
-    # BeforeHookCreation deletes the old Job only as the next sync creates its
-    # replacement, so the last run's logs stay readable. HookSucceeded and
-    # HookFailed destroy exactly the logs you need after a failure.
+    {{- /* BeforeHookCreation deletes the old Job only as the next sync creates
+           its replacement, so the last run's logs stay readable. HookSucceeded
+           and HookFailed destroy exactly the logs you need after a failure. */}}
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 spec:
-  # A failed migration is looked at, not retried blindly.
+  {{- /* A failed migration is looked at, not retried blindly. */}}
   backoffLimit: 0
-  # Must cover the SUM of a release's migrations: `upgrade head` applies every
-  # pending revision inside ONE transaction, so this is not a per-migration
-  # budget. Per-environment -- prod's data makes the same DDL slowest there.
+  {{- /* Covers the SUM of a release's migrations: `upgrade head` applies every
+         pending revision inside ONE transaction. Keep it above the lock timeout
+         in env below, or a concurrent sync dies unexplained. */}}
   activeDeadlineSeconds: {{ .Values.migrations.deadline | default 900 }}
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ .Chart.Name }}
-        app.kubernetes.io/instance: {{ .Release.Name }}
-        app.kubernetes.io/component: migrate
+        app.kubernetes.io/instance: keep
+        app.kubernetes.io/name: keep
+        keep-component: migrations
     spec:
+      serviceAccountName: {{ .Values.migrations.serviceAccountName | default "keep" }}
       restartPolicy: Never
-      {{- with .Values.migrations.serviceAccountName | default .Values.serviceAccountName }}
-      serviceAccountName: {{ . }}
-      {{- end }}
+      schedulerName: default-scheduler
+      terminationGracePeriodSeconds: 30
+      dnsPolicy: ClusterFirst
+      securityContext: {}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- /*
-        No securityContext, matching the other workloads in this chart:
-        OpenShift's restricted SCC assigns a non-root UID from the namespace
-        range and drops capabilities on its own. Set .Values.migrations
-        .podSecurityContext / .containerSecurityContext if a cluster ever needs
-        it spelled out.
-      */ -}}
-      {{- with .Values.migrations.podSecurityContext }}
-      securityContext:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
       containers:
+        # ---------------------------------------------------------
+        # Migration runner. Applies pending revisions, then exits.
+        # ---------------------------------------------------------
         - name: migrate
-          # The migrations image, NOT the app image. It is append-only, so the
-          # current tag contains every revision ever written -- including every
-          # downgrade(). It is never rolled back with the app.
+          {{- /* The migrations image, NOT an app image. Append-only: the current
+                 tag holds every revision ever written, including every
+                 downgrade(), so it is never rolled back with the app. */}}
           image: "{{ .Values.migrations.image.repository }}:{{ .Values.migrations.image.tag }}"
-          imagePullPolicy: {{ .Values.migrations.image.pullPolicy | default "IfNotPresent" }}
+          imagePullPolicy: {{ .Values.migrations.image.pullPolicy | default "Always" }}
           args:
             - "--target"
             - "{{ .Values.migrations.target | default "head" }}"
             {{- if .Values.migrations.allowDestructive }}
             - "--allow-destructive"
             {{- end }}
-          envFrom:
-            # The same secret the app Deployment uses. The container needs
-            # exactly one variable from it: DATABASE_CONNECTION_STRING.
-            - secretRef:
-                name: {{ required "migrations.dbSecretName is required" .Values.migrations.dbSecretName }}
-          {{- with .Values.migrations.extraEnv }}
-          env:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          {{- with .Values.migrations.containerSecurityContext }}
-          securityContext:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
+          # ---------------------------------------------------------
+          # RESOURCES (cpu / memory / ephemeral-storage)
+          # ---------------------------------------------------------
+          {{- with .Values.migrations.resources }}
           resources:
-            {{- toYaml (.Values.migrations.resources | default dict) | nindent 12 }}
+            {{- if .limits }}
+            limits:
+              cpu: "{{ .limits.cpu }}"
+              memory: "{{ .limits.memory }}"
+              {{- if .limits.ephemeralStorage }}
+              ephemeral-storage: "{{ .limits.ephemeralStorage }}"
+              {{- end }}
+            {{- end }}
+            {{- if .requests }}
+            requests:
+              cpu: "{{ .requests.cpu }}"
+              memory: "{{ .requests.memory }}"
+              {{- if .requests.ephemeralStorage }}
+              ephemeral-storage: "{{ .requests.ephemeralStorage }}"
+              {{- end }}
+            {{- end }}
+          {{- end }}
+          # ---------------------------------------------------------
+          # ENVIRONMENT VARIABLES (map or list -- same shapes as workflows)
+          # ---------------------------------------------------------
+          {{- $env := .Values.migrations.env }}
+          {{- if $env }}
+          env:
+          {{- if eq (kindOf $env) "map" }}
+          {{- range $k, $v := $env }}
+            - name: {{ $k }}
+              {{- if $v.value }}
+              value: {{ $v.value | quote }}
+              {{- else if $v.secretKeyRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $v.secretKeyRef.name | default (index $.Values.secrets 0).name }}
+                  key: {{ $v.secretKeyRef.key }}
+              {{- else if $v.valueFrom }}
+              valueFrom:
+                {{ toYaml $v.valueFrom | nindent 16 }}
+              {{- end }}
+          {{- end }}
+          {{- else }}
+          {{- range $env }}
+            - name: {{ .name }}
+              {{- if .value }}
+              value: {{ .value | quote }}
+              {{- else if .secretKeyRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretKeyRef.name | default (index $.Values.secrets 0).name }}
+                  key: {{ .secretKeyRef.key }}
+              {{- else if .valueFrom }}
+              valueFrom:
+                {{ toYaml .valueFrom | nindent 16 }}
+              {{- end }}
+          {{- end }}
+          {{- end }}
+          {{- end }}
+          {{- /* Deliberately NOT conditional on `env` being absent, unlike the
+                 Deployment. This container's one requirement is
+                 DATABASE_CONNECTION_STRING from this secret; making it
+                 conditional would mean adding a single env var silently drops
+                 the connection string and the Job dies on connect. */}}
+          {{- if .Values.secrets }}
+          envFrom:
+            - secretRef:
+                name: {{ (index .Values.secrets 0).name | trunc 63 | trimSuffix "-" }}
+          {{- end }}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          securityContext: {}
       {{- with .Values.migrations.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

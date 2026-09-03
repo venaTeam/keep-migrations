@@ -1,11 +1,11 @@
-# Copy the `migrations:` block into your chart's values.yaml, alongside the
-# app's own `image`. The keys below it are scaffolding so this directory can be
-# rendered on its own with `helm template`.
+# Copy the `migrations:` block into keep-helm's values.yaml, alongside
+# `workflows:`. The keys below it are scaffolding so this directory renders on
+# its own with `helm template rel chart/`.
 #
 # The app image, the migrations image and the schema target move independently.
 # That is what makes rollback declarative:
 #
-#   roll the APP back    -> change image.tag only. The Job sees the database
+#   roll the APP back    -> change its image.tag only. The Job sees the database
 #                           already at target and exits 0; pods roll back and
 #                           /readyz passes because extra columns are ignored.
 #                           ONE commit.
@@ -43,11 +43,11 @@ migrations:
   enabled: false
 
   image:
-    repository: <registry>/keep-migrations
+    repository: 8200artifactory.d8200.mil/docker-virtual/vena-889/keep-migrations
     # Append-only: this tag holds every revision ever written. Bump it forward
     # with each release; never roll it back with the app.
-    tag: "2026-09-01"
-    pullPolicy: IfNotPresent
+    tag: "2026-09-03"
+    pullPolicy: Always
 
   # What the schema should be. `head` for every normal release. To roll the
   # schema back, set a specific revision id here AND allowDestructive: true.
@@ -59,39 +59,42 @@ migrations:
 
   # activeDeadlineSeconds. Covers the SUM of a release's migrations, not one.
   # Raise it for prod, where the same DDL is slowest. Keep it above the lock
-  # timeout in extraEnv below.
+  # timeout in env below.
   deadline: 900
 
-  # The secret carrying DATABASE_CONNECTION_STRING -- the same one the app
-  # Deployment consumes. Required.
-  dbSecretName: keep-db
-
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      memory: 512Mi
-
-  extraEnv:
+  env:
     # Must stay BELOW `deadline` above. The default lock wait is 3600s, so with a
     # 900s deadline Kubernetes kills the Job first and you get a bare
     # DeadlineExceeded with nothing in the logs -- instead of "another process
     # has held the migration lock for more than Ns", which tells you a concurrent
     # sync is the cause rather than a slow migration.
-    - name: KEEP_MIGRATION_LOCK_TIMEOUT_SECONDS
+    KEEP_MIGRATION_LOCK_TIMEOUT_SECONDS:
       value: "600"
 
+  # Same shape as workflows.resources. A DDL runner is not memory-hungry; the
+  # limit exists so a runaway migration cannot starve the node.
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+
   # Optional; all default to unset.
-  # Left unset to match the other workloads in this chart -- OpenShift's
-  # restricted SCC assigns a non-root UID and drops capabilities on its own.
-  # Fill these in only if a cluster requires it spelled out.
-  # podSecurityContext: {}
-  # containerSecurityContext: {}
-  # serviceAccountName: ""     # falls back to .Values.serviceAccountName
+  # serviceAccountName: ""     # defaults to "keep", as workflows uses
   # nodeSelector: {}
   # tolerations: []
   # affinity: {}
 
-serviceAccountName: keep
+# --- scaffolding below: these already exist in keep-helm ---------------------
+global:
+  keep:
+    namespace: keep
+
+# DATABASE_CONNECTION_STRING is read from the first entry, the same secret the
+# app Deployments consume via envFrom.
+secrets:
+  - name: keep-secrets
+
 imagePullSecrets: []
