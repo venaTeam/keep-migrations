@@ -39,7 +39,34 @@ EXIT_REFUSED = 1
 # `downgrade()` -- it reports success while changing nothing. Matched against the
 # SQL upper-cased.
 _NO_OP_MARKER = "UPDATE ALEMBIC_VERSION"
-_DESTRUCTIVE_MARKERS = ("DROP TABLE", "DROP COLUMN")
+
+# Matched against the SQL a path WOULD emit, upper-cased, comments removed. The
+# point is not to make a destructive path impossible -- `--allow-destructive`
+# always overrides -- but to make it deliberate, so dropping a column of
+# production data is something you typed rather than something that happened
+# while rolling back a release you assumed was harmless.
+#
+# DROP INDEX is deliberately absent. It loses no data, and it appears in 4
+# downgrade paths that are otherwise entirely safe; refusing those would train
+# everyone to paste --allow-destructive onto every command, and then this guards
+# nothing. TRUNCATE, DELETE FROM and DROP SCHEMA never appear in the revisions
+# today -- alembic does not emit them -- but a hand-written `op.execute()` can,
+# and they are the cases you cannot undo.
+_DESTRUCTIVE_MARKERS = (
+    "DROP TABLE",
+    "DROP COLUMN",
+    # Data stays, but the guarantee protecting it does not: once a unique
+    # constraint is gone duplicates can be written, and re-applying the migration
+    # later fails if any crept in. A one-way door dressed as a reversible change.
+    "DROP CONSTRAINT",
+    "DROP SCHEMA",
+    "TRUNCATE",
+)
+
+#: `DELETE FROM alembic_version` is bookkeeping in every downgrade, so this one
+#: cannot be a plain substring like the rest.
+_DELETE_MARKER = "DELETE FROM"
+_DELETE_BOOKKEEPING = "DELETE FROM ALEMBIC_VERSION"
 
 
 def _resolve(script: ScriptDirectory, target: str) -> str:
@@ -112,18 +139,35 @@ def _offline_sql(
     return buffer.getvalue()
 
 
-def _destructive_reason(sql: str) -> str | None:
-    """Why this path should not run unattended, or None if it is safe."""
-    upper = sql.upper()
-    hits = [m for m in _DESTRUCTIVE_MARKERS if m in upper]
-    if hits:
-        return f"the path emits {', '.join(hits)} -- data leaves the database"
+def _statements(sql: str) -> list[str]:
+    """The executable lines, with alembic's comments dropped.
 
-    statements = [
+    Its offline output is mostly `-- Running downgrade X -> Y, <docstring>`, and
+    those docstrings describe what the migration does -- so scanning them for
+    "DROP TABLE" refuses paths on the strength of a sentence someone wrote about
+    a migration rather than the SQL it emits.
+    """
+    return [
         line.strip()
         for line in sql.splitlines()
         if line.strip() and not line.strip().startswith("--")
     ]
+
+
+def _destructive_reason(sql: str) -> str | None:
+    """Why this path should not run unattended, or None if it is safe."""
+    statements = _statements(sql)
+    upper = "\n".join(statements).upper()
+
+    hits = [m for m in _DESTRUCTIVE_MARKERS if m in upper]
+    if _DELETE_MARKER in upper and any(
+        _DELETE_MARKER in s.upper() and _DELETE_BOOKKEEPING not in s.upper()
+        for s in statements
+    ):
+        hits.append(_DELETE_MARKER)
+    if hits:
+        return f"the path emits {', '.join(hits)} -- data leaves the database"
+
     if statements and all(_NO_OP_MARKER in s.upper() for s in statements):
         return (
             "the path only restamps alembic_version -- every migration crossed has "

@@ -258,6 +258,55 @@ def test_destructive_reason_ignores_sql_comments():
     assert migrations._destructive_reason("ALTER TABLE t ADD COLUMN c INT;") is None
 
 
+def test_dropping_a_constraint_is_destructive():
+    """No data leaves, but the guarantee protecting it does: duplicates can be
+    written afterwards, and re-applying the migration then fails. One real
+    downgrade path (preset_tag_name_per_tenant) drops a unique constraint and
+    nothing else -- it passed as safe before this marker."""
+    sql = "ALTER TABLE tag DROP CONSTRAINT uq_tag_tenant_name;"
+    assert "DROP CONSTRAINT" in migrations._destructive_reason(sql)
+
+
+def test_truncate_and_drop_schema_are_destructive():
+    """Alembic never emits either; a hand-written op.execute() can, and they are
+    the cases you cannot undo."""
+    assert migrations._destructive_reason("TRUNCATE TABLE alert;") is not None
+    assert migrations._destructive_reason("DROP SCHEMA public CASCADE;") is not None
+
+
+def test_delete_from_a_real_table_is_destructive():
+    assert migrations._destructive_reason("DELETE FROM alert WHERE id > 5;") is not None
+
+
+def test_delete_from_alembic_version_alone_is_not_destructive():
+    """Every downgrade restamps by deleting from alembic_version. Treating that
+    as data loss would refuse every path there is."""
+    sql = (
+        "ALTER TABLE alert ADD COLUMN note VARCHAR;\n"
+        "DELETE FROM alembic_version WHERE alembic_version.version_num = 'rev3';\n"
+        "INSERT INTO alembic_version (version_num) VALUES ('rev2');"
+    )
+    assert migrations._destructive_reason(sql) is None
+
+
+def test_a_marker_inside_a_comment_is_not_destructive():
+    """Alembic's offline output quotes each migration's docstring in a comment.
+    Scanning those refuses a path on the strength of a sentence someone wrote
+    about a migration rather than the SQL it emits."""
+    sql = (
+        "-- Running downgrade rev3 -> rev2, drop table alertenrichment (SC-05)\n"
+        "ALTER TABLE alert ADD COLUMN note VARCHAR;"
+    )
+    assert migrations._destructive_reason(sql) is None
+
+
+def test_dropping_an_index_is_not_destructive():
+    """Deliberately absent from the markers: no data is lost, and it appears in
+    four otherwise-safe downgrade paths. A guard that fires on safe things gets
+    --allow-destructive pasted onto every command, and then it guards nothing."""
+    assert migrations._destructive_reason("DROP INDEX ix_alert_tenant_id;") is None
+
+
 def test_offline_span_for_a_fresh_database_walks_from_base():
     """An empty start ident is not valid -- alembic asserts on it -- so a
     database with no alembic_version must resolve to "base"."""
