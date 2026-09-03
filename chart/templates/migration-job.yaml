@@ -117,7 +117,15 @@ spec:
               {{- else if $v.secretKeyRef }}
               valueFrom:
                 secretKeyRef:
-                  name: {{ $v.secretKeyRef.name | default (index $.Values.secrets 0).name }}
+                  {{- /* if/else, not `default`: a pipeline evaluates BOTH sides,
+                         so `default (index .Values.secrets 0).name` errors with
+                         "slice index out of range" whenever secrets is [] --
+                         even when the name is supplied right here. */}}
+                  {{- if $v.secretKeyRef.name }}
+                  name: {{ $v.secretKeyRef.name }}
+                  {{- else }}
+                  name: {{ (index $.Values.secrets 0).name }}
+                  {{- end }}
                   key: {{ $v.secretKeyRef.key }}
               {{- else if $v.valueFrom }}
               valueFrom:
@@ -132,7 +140,11 @@ spec:
               {{- else if .secretKeyRef }}
               valueFrom:
                 secretKeyRef:
-                  name: {{ .secretKeyRef.name | default (index $.Values.secrets 0).name }}
+                  {{- if .secretKeyRef.name }}
+                  name: {{ .secretKeyRef.name }}
+                  {{- else }}
+                  name: {{ (index $.Values.secrets 0).name }}
+                  {{- end }}
                   key: {{ .secretKeyRef.key }}
               {{- else if .valueFrom }}
               valueFrom:
@@ -141,11 +153,9 @@ spec:
           {{- end }}
           {{- end }}
           {{- end }}
-          {{- /* Deliberately NOT conditional on `env` being absent, unlike the
-                 Deployment. This container's one requirement is
-                 DATABASE_CONNECTION_STRING from this secret; making it
-                 conditional would mean adding a single env var silently drops
-                 the connection string and the Job dies on connect. */}}
+          {{- /* Optional bulk import, as in workflows.yaml. The connection string
+                 normally arrives through `env` above, the way workflows gets it
+                 -- so this stays empty in practice, since `secrets` is []. */}}
           {{- if .Values.secrets }}
           envFrom:
             - secretRef:

@@ -43,10 +43,10 @@ migrations:
   enabled: false
 
   image:
-    repository: 8200artifactory.d8200.mil/docker-virtual/vena-889/keep-migrations
+    repository: 8200artifactory.d8200.mil/docker-virtual/vena/keep/keep-migrations
     # Append-only: this tag holds every revision ever written. Bump it forward
     # with each release; never roll it back with the app.
-    tag: "2026-09-03"
+    tag: 0.50.0.1
     pullPolicy: Always
 
   # What the schema should be. `head` for every normal release. To roll the
@@ -63,6 +63,14 @@ migrations:
   deadline: 900
 
   env:
+    # The one thing this container actually needs. Same secret and key the
+    # workflows Deployment reads it from -- the Job must migrate exactly the
+    # database the services talk to.
+    DATABASE_CONNECTION_STRING:
+      secretKeyRef:
+        name: postgres-credentials
+        key: DATABASE_CONNECTION_STRING_ALERTS
+
     # Must stay BELOW `deadline` above. The default lock wait is 3600s, so with a
     # 900s deadline Kubernetes kills the Job first and you get a bare
     # DeadlineExceeded with nothing in the logs -- instead of "another process
@@ -71,15 +79,15 @@ migrations:
     KEEP_MIGRATION_LOCK_TIMEOUT_SECONDS:
       value: "600"
 
-  # Same shape as workflows.resources. A DDL runner is not memory-hungry; the
-  # limit exists so a runaway migration cannot starve the node.
+  # Same shape as workflows.resources, smaller because this opens one connection
+  # and runs DDL. The limit exists so a runaway migration cannot starve the node.
   resources:
     limits:
-      cpu: "500m"
-      memory: "512Mi"
+      cpu: "1"
+      memory: 512Mi
     requests:
       cpu: "100m"
-      memory: "256Mi"
+      memory: 256Mi
 
   # Optional; all default to unset.
   # serviceAccountName: ""     # defaults to "keep", as workflows uses
@@ -92,9 +100,9 @@ global:
   keep:
     namespace: keep
 
-# DATABASE_CONNECTION_STRING is read from the first entry, the same secret the
-# app Deployments consume via envFrom.
-secrets:
-  - name: keep-secrets
+# Empty in keep-helm today. The connection string comes through `env` above with
+# an explicit secretKeyRef, the way workflows gets it -- so nothing here reads
+# this list, and the optional envFrom in the template stays unrendered.
+secrets: []
 
 imagePullSecrets: []
