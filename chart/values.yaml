@@ -79,8 +79,12 @@ migrations:
     KEEP_MIGRATION_LOCK_TIMEOUT_SECONDS:
       value: "600"
 
-  # Same shape as workflows.resources, smaller because this opens one connection
-  # and runs DDL. The limit exists so a runaway migration cannot starve the node.
+  # OPTIONAL -- delete the block and no resources are rendered. Worth keeping for
+  # two reasons: an OpenShift namespace with a LimitRange or ResourceQuota
+  # rejects a pod that declares none, and without requests the pod is BestEffort
+  # QoS, i.e. first evicted under node pressure -- which mid-DDL means a failed
+  # sync. Same shape as workflows.resources, smaller because this opens one
+  # connection and runs DDL.
   resources:
     limits:
       cpu: "1"
@@ -95,7 +99,11 @@ migrations:
   # tolerations: []
   # affinity: {}
 
-# --- scaffolding below: these already exist in keep-helm ---------------------
+# --- DO NOT COPY BELOW THIS LINE --------------------------------------------
+# These already exist in keep-helm's values.yaml. They are here only so this
+# directory renders on its own. The template treats all three as optional:
+# without `global` it omits the namespace (Helm and Argo place the Job in the
+# destination namespace anyway), and without `secrets` it omits the bulk envFrom.
 global:
   keep:
     namespace: keep

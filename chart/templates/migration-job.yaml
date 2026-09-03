@@ -20,7 +20,12 @@ metadata:
   {{- /* Fixed name, NOT generateName: BeforeHookCreation deletes the previous
          run by name, and generateName leaves every run's Job behind forever. */}}
   name: keep-migrate
-  namespace: {{ $.Values.global.keep.namespace }}
+  {{- /* Set for consistency with workflows.yaml, but optional: Helm and Argo
+         already create this in the release's destination namespace, so an
+         absent global.keep just omits the field rather than failing. */}}
+  {{- with (($.Values.global).keep).namespace }}
+  namespace: {{ . }}
+  {{- end }}
   labels:
     app.kubernetes.io/instance: keep
     app.kubernetes.io/managed-by: Helm
