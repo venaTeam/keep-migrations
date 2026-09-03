@@ -38,8 +38,15 @@ markdown file drifts the moment the template changes.
 | `chart/templates/migration-job.yaml` | your chart's `templates/` |
 | the `migrations:` block in `chart/values.yaml` | your chart's `values.yaml` |
 
-`chart/Chart.yaml` is scaffolding so the template renders standalone
-(`helm template rel chart/`); it is not part of your chart.
+There is deliberately no `Chart.yaml` here -- nothing in this directory is meant
+to be installed, and one lying around only invites the question of whether it
+should be copied too. To render the template locally, borrow a throwaway one:
+
+```bash
+printf 'apiVersion: v2\nname: keep\nversion: 0.0.0\n' > chart/Chart.yaml
+helm template rel chart/ --set migrations.enabled=true
+rm chart/Chart.yaml
+```
 
 The only required value is `migrations.dbSecretName` — the secret already
 carrying `DATABASE_CONNECTION_STRING` for the app Deployment. The template fails
