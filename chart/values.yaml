@@ -1,0 +1,65 @@
+# Paste this block into keep-helm's values.yaml, alongside `workflows:`.
+# `secrets: []` already exists there -- it is repeated here only so this
+# directory renders on its own.
+#
+# The app image, the migrations image and the schema target move independently.
+# That is what makes rollback declarative:
+#
+#   roll the APP back    -> change its image.tag only. The Job sees the database
+#                           already at target and exits 0. ONE commit.
+#   roll the SCHEMA back -> change target + allowDestructive, in a SECOND commit
+#                           after the app one. PreSync runs before the Deployment
+#                           updates, so moving both at once would drop the schema
+#                           under pods still running the new code.
+
+migrations:
+  image:
+    repository: 8200artifactory.d8200.mil/docker-virtual/vena/keep/keep-migrations
+    # Append-only: this tag holds every revision ever written. Bump it forward
+    # with each release; never roll it back with the app.
+    tag: 0.50.0.1
+    pullPolicy: Always
+
+  # What the schema should be. `head` for every normal release. To roll the
+  # schema back, put a specific revision id here AND set allowDestructive: true.
+  target: head
+
+  # Guards downgrades. Set it only in the commit that deliberately walks the
+  # schema backwards, and unset it afterwards.
+  allowDestructive: false
+
+  # activeDeadlineSeconds: how long Kubernetes lets the Job run. Covers the SUM
+  # of a release's migrations, not the slowest one. Raise it for prod, where the
+  # same DDL is slowest. Must stay ABOVE the lock timeout below.
+  deadline: 900
+
+  env:
+    # The one thing this container needs. Same secret and key the workflows
+    # Deployment reads, so the Job migrates exactly the database the services
+    # talk to.
+    DATABASE_CONNECTION_STRING:
+      secretKeyRef:
+        name: postgres-credentials
+        key: DATABASE_CONNECTION_STRING_ALERTS
+
+    # Must stay BELOW `deadline`. The default lock wait is 3600s, so with a 900s
+    # deadline Kubernetes kills the Job first and you get a bare
+    # DeadlineExceeded with nothing in the logs -- instead of "another process
+    # has held the migration lock for more than Ns", which names the cause.
+    KEEP_MIGRATION_LOCK_TIMEOUT_SECONDS:
+      value: "600"
+
+  # Optional: delete the block and no resources are rendered. Worth keeping --
+  # an OpenShift namespace with a LimitRange or ResourceQuota rejects a pod
+  # declaring none, and without requests the pod is BestEffort QoS, first evicted
+  # under node pressure, which mid-DDL is a failed sync.
+  resources:
+    limits:
+      cpu: "1"
+      memory: 512Mi
+    requests:
+      cpu: "100m"
+      memory: 256Mi
+
+# --- already in keep-helm; here only so this directory renders ---------------
+secrets: []

@@ -1,0 +1,41 @@
+[tool.poetry]
+name = "keep-migrations"
+version = "0.1.0"
+description = "Owns the Keep database schema. Ships as an image, not a library."
+authors = ["Keep"]
+readme = "README.md"
+packages = [{ include = "keep_migrations" }]
+
+# Deliberately minimal. This image runs DDL and exits; it has no models, no web
+# framework and no Kafka client. If a dependency here starts looking like the
+# gateway's, something has been imported that should not have been.
+[tool.poetry.dependencies]
+python = ">=3.11,<4.0"
+alembic = "^1.13.2"
+sqlalchemy = "^2.0.14"
+sqlmodel = "^0.0.22"
+
+# BOTH Postgres drivers, because the Job reads the same secret as the app
+# Deployment and so gets the identical URL string. keep-api-gateway ships both
+# and rewrites nothing, so `postgresql://` (psycopg2) and `postgresql+psycopg://`
+# (v3) are both valid there; shipping one here would break on the other.
+psycopg2-binary = "^2.9"
+psycopg = { version = "^3.2.3", extras = ["binary"] }
+
+click = "^8.1"
+python-dotenv = "^1.0"
+sqlalchemy-utils = "^0.41.0"
+# Needed by individual revision scripts, not by the runner: some historical data
+# migrations parse YAML payloads and declare pydantic models inline.
+pyyaml = "^6.0"
+pydantic = "^1.10.4"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+
+[tool.poetry.scripts]
+keep-migrate = "keep_migrations.cli:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

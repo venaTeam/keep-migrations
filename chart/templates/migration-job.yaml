@@ -1,0 +1,85 @@
+{{- /* --------------------------------------------------------------
+  KEEP-MIGRATIONS JOB
+  Argo PreSync hook: runs once per release, before any pod of the new
+  ReplicaSet exists. A failure stops the sync and leaves the running
+  pods untouched.
+  ------------------------------------------------------------- */}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  {{- /* Fixed name, NOT generateName: BeforeHookCreation deletes the previous
+         run by name, and generateName leaves every run behind forever. */}}
+  name: keep-migrate
+  {{- with (($.Values.global).keep).namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    app.kubernetes.io/instance: keep
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/version: {{ $.Chart.AppVersion | default $.Chart.Version | quote }}
+    helm.sh/chart: {{ $.Chart.Name }}-{{ $.Chart.Version }}
+    keep-component: migrations
+  annotations:
+    {{- /* MUST be on the Job's own metadata. Under spec.template.metadata they
+           apply to the pod, Argo ignores them, and this silently becomes an
+           ordinary Sync-phase resource with no ordering guarantee. */}}
+    argocd.argoproj.io/hook: PreSync
+    {{- /* Deletes the old Job only as the next sync creates its replacement, so
+           the last run's logs stay readable. HookSucceeded/HookFailed destroy
+           exactly the logs you need after a failure. */}}
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  {{- /* A failed migration is looked at, not retried blindly. */}}
+  backoffLimit: 0
+  {{- /* Covers the SUM of a release's migrations -- `upgrade head` applies every
+         pending revision in ONE transaction. Keep above the lock timeout in env,
+         or a concurrent sync dies as an unexplained DeadlineExceeded. */}}
+  activeDeadlineSeconds: {{ .Values.migrations.deadline | default 900 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: keep
+        app.kubernetes.io/name: keep
+        keep-component: migrations
+    spec:
+      serviceAccountName: keep
+      restartPolicy: Never
+      schedulerName: default-scheduler
+      terminationGracePeriodSeconds: 30
+      dnsPolicy: ClusterFirst
+      securityContext: {}
+      containers:
+        - name: migrate
+          {{- /* The migrations image, NOT an app image. Append-only: this tag
+                 holds every revision ever written, including every downgrade(),
+                 so it is never rolled back with the app. */}}
+          image: "{{ .Values.migrations.image.repository }}:{{ .Values.migrations.image.tag }}"
+          imagePullPolicy: {{ .Values.migrations.image.pullPolicy | default "Always" }}
+          args:
+            - "--target"
+            - "{{ .Values.migrations.target | default "head" }}"
+            {{- if .Values.migrations.allowDestructive }}
+            - "--allow-destructive"
+            {{- end }}
+          {{- with .Values.migrations.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.migrations.env }}
+          env:
+            {{- range $name, $v := . }}
+            - name: {{ $name }}
+              {{- if $v.value }}
+              value: {{ $v.value | quote }}
+              {{- else if $v.secretKeyRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $v.secretKeyRef.name }}
+                  key: {{ $v.secretKeyRef.key }}
+              {{- end }}
+            {{- end }}
+          {{- end }}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          securityContext: {}
