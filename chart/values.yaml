@@ -83,6 +83,11 @@ migrations:
       value: "600"
 
   # Optional; all default to unset.
+  # Left unset to match the other workloads in this chart -- OpenShift's
+  # restricted SCC assigns a non-root UID and drops capabilities on its own.
+  # Fill these in only if a cluster requires it spelled out.
+  # podSecurityContext: {}
+  # containerSecurityContext: {}
   # serviceAccountName: ""     # falls back to .Values.serviceAccountName
   # nodeSelector: {}
   # tolerations: []

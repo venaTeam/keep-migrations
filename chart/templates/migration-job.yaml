@@ -46,12 +46,17 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- /*
+        No securityContext, matching the other workloads in this chart:
+        OpenShift's restricted SCC assigns a non-root UID from the namespace
+        range and drops capabilities on its own. Set .Values.migrations
+        .podSecurityContext / .containerSecurityContext if a cluster ever needs
+        it spelled out.
+      */ -}}
+      {{- with .Values.migrations.podSecurityContext }}
       securityContext:
-        # No runAsUser: OpenShift's restricted SCC assigns one from the
-        # namespace range, and hardcoding a UID makes the pod unschedulable.
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: migrate
           # The migrations image, NOT the app image. It is append-only, so the
@@ -74,11 +79,10 @@ spec:
           env:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- with .Values.migrations.containerSecurityContext }}
           securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           resources:
             {{- toYaml (.Values.migrations.resources | default dict) | nindent 12 }}
       {{- with .Values.migrations.nodeSelector }}
