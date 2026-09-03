@@ -25,7 +25,11 @@ metadata:
     app.kubernetes.io/instance: keep
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/name: keep
-    app.kubernetes.io/version: {{ $.Chart.AppVersion }}
+    {{- /* Quoted and defaulted: an unset appVersion renders as null here, and
+           Kubernetes rejects a null label value -- so the Job would fail to
+           apply over a Chart.yaml field. Nothing outside values.yaml is
+           required. */}}
+    app.kubernetes.io/version: {{ $.Chart.AppVersion | default $.Chart.Version | quote }}
     helm.sh/chart: {{ $.Chart.Name }}-{{ $.Chart.Version }}
     keep-component: migrations
   annotations:
