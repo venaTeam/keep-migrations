@@ -109,10 +109,34 @@ def declared():
     return _record_declared_schema(load_automation_migration("automation_schema_probe"))
 
 
+def _apply_enum_additions(dump: dict) -> dict:
+    """Fold later ``ALTER TYPE ... ADD VALUE`` revisions into the declared schema.
+
+    Recording ``create_table`` calls captures the enum members as first created.
+    A follow-up revision that only adds a value declares no table, so its effect
+    is applied here from the constants it exports — the fixture describes the
+    schema at head, which is what keep-automation-api's ORM models match.
+    """
+    from tests.test_suppression_reason_inactive_migration import (
+        load_inactive_migration,
+    )
+
+    additions = [load_inactive_migration("suppression_reason_inactive_probe")]
+    for migration in additions:
+        for table in dump.values():
+            for column in table["columns"]:
+                if column.get("type") == migration.ENUM_TYPE:
+                    column["enum_values"] = [
+                        *column["enum_values"],
+                        migration.ADDED_VALUE,
+                    ]
+    return dump
+
+
 @pytest.fixture(scope="module")
 def migration_dump(declared):
     tables, indexes = declared
-    return dump_from_tables(tables, indexes)["tables"]
+    return _apply_enum_additions(dump_from_tables(tables, indexes)["tables"])
 
 
 def test_migration_creates_exactly_the_fixtured_tables(declared):
