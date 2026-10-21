@@ -87,6 +87,16 @@ def test_upgrade_adds_nullable_column_and_index(engine, migration):
     assert "ix_lastalert_maintenance_window_id" in _indexes(engine)
 
 
+def test_index_is_partial_on_set_rows(engine, migration):
+    _run(engine, migration.upgrade)
+    with engine.connect() as conn:
+        ddl = conn.execute(
+            sa.text("SELECT sql FROM sqlite_master WHERE name = :name"),
+            {"name": "ix_lastalert_maintenance_window_id"},
+        ).scalar_one()
+    assert "WHERE maintenance_window_id IS NOT NULL" in ddl
+
+
 def test_upgrade_keeps_existing_rows_visible(engine, migration):
     _run(engine, migration.upgrade)
     with engine.connect() as conn:
