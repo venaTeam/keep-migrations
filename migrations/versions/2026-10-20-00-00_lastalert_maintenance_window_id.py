@@ -8,9 +8,9 @@ mode, not ended). Nothing rewrites the row when the window ends.
 
 No foreign key on purpose: deleting a window must leave the id behind (a
 dangling id reads as "visible") rather than block the delete or rewrite
-lastalert. The partial index serves the keep-workflows watcher step that finds
-rows whose window is no longer active; the feed query reads the column only
-through rows it has already selected.
+lastalert. The partial index serves the keep-workflows watcher step that checks
+whether a window that just ended still tags any alerts; the feed query reads
+the column only through rows it has already selected.
 
 The column is added inside the migration transaction: nullable with no
 default, so Postgres only updates the catalog. The index is built with CREATE
