@@ -1,14 +1,14 @@
 """Add fingerprint-level automation coverage (B6).
 
 Revision ID: automation_coverage
-Revises: merge_automations_preset_tag
+Revises: lastalert_maintenance_window_id
 """
 
 from alembic import op
 import sqlalchemy as sa
 
 revision = "automation_coverage"
-down_revision = "merge_automations_preset_tag"
+down_revision = "lastalert_maintenance_window_id"
 branch_labels = None
 depends_on = None
 
