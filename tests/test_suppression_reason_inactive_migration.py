@@ -1,4 +1,4 @@
-"""`automation_suppression_reason_inactive`: adds `inactive` to the enum.
+"""`suppression_reason_inactive`: adds `inactive` to the enum.
 
 Hermetic like the other migration tests: the module is loaded by path and driven
 through alembic's ``MigrationContext`` + ``Operations``. Postgres output is
@@ -20,7 +20,7 @@ MIGRATION_PATH = os.path.join(
     os.path.dirname(os.path.dirname(__file__)),
     "migrations",
     "versions",
-    "2026-09-15-00-00_automation_suppression_reason_inactive.py",
+    "2026-09-15-00-00_suppression_reason_inactive.py",
 )
 
 
@@ -44,7 +44,7 @@ def _offline_postgres_sql(step) -> str:
 
 def test_revision_chain_follows_the_current_head():
     migration = load_inactive_migration()
-    assert migration.revision == "automation_suppression_reason_inactive"
+    assert migration.revision == "suppression_reason_inactive"
     assert migration.down_revision == "automation_coverage"
 
 

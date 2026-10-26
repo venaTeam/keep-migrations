@@ -16,7 +16,7 @@ from alembic import op
 from sqlalchemy.dialects import mysql
 
 revision = "add_dashboard_image"
-down_revision = "derive_alert_suppression"
+down_revision = "merge_automations_preset_tag"
 branch_labels = None
 depends_on = None
 

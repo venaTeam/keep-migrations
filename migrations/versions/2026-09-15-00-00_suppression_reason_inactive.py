@@ -1,6 +1,6 @@
 """add `inactive` to automation_suppression_reason
 
-Revision ID: automation_suppression_reason_inactive
+Revision ID: suppression_reason_inactive
 Revises: automation_coverage
 Create Date: 2026-09-15 00:00:00.000000
 
@@ -28,7 +28,7 @@ never write `inactive`; nothing is emitted there.
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "automation_suppression_reason_inactive"
+revision = "suppression_reason_inactive"
 down_revision = "automation_coverage"
 branch_labels = None
 depends_on = None
