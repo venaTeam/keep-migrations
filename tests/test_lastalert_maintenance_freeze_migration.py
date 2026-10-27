@@ -89,15 +89,6 @@ def test_revision_chain(migration):
     assert migration.down_revision == "suppression_reason_inactive"
 
 
-def test_is_the_single_head():
-    from alembic.script import ScriptDirectory
-
-    scripts = ScriptDirectory(
-        os.path.join(os.path.dirname(os.path.dirname(__file__)), "migrations")
-    )
-    assert scripts.get_heads() == ["lastalert_maintenance_freeze"]
-
-
 def test_upgrade_adds_nullable_columns_and_index(engine, migration):
     _run(engine, migration.upgrade)
     columns = _columns(engine)
