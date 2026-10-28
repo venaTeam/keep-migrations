@@ -117,19 +117,23 @@ def _apply_enum_additions(dump: dict) -> dict:
     is applied here from the constants it exports — the fixture describes the
     schema at head, which is what keep-automation-api's ORM models match.
     """
+    from tests.test_revision_action_build_outcomes_migration import (
+        load_build_outcomes_migration,
+    )
     from tests.test_suppression_reason_inactive_migration import (
         load_inactive_migration,
     )
 
-    additions = [load_inactive_migration("suppression_reason_inactive_probe")]
+    additions = [
+        load_inactive_migration("suppression_reason_inactive_probe"),
+        load_build_outcomes_migration("revision_action_build_outcomes_probe"),
+    ]
     for migration in additions:
+        added = getattr(migration, "ADDED_VALUES", None) or (migration.ADDED_VALUE,)
         for table in dump.values():
             for column in table["columns"]:
                 if column.get("type") == migration.ENUM_TYPE:
-                    column["enum_values"] = [
-                        *column["enum_values"],
-                        migration.ADDED_VALUE,
-                    ]
+                    column["enum_values"] = [*column["enum_values"], *added]
     return dump
 
 
