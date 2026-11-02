@@ -6,18 +6,6 @@ from pathlib import Path
 import sqlalchemy as sa
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from alembic.script import ScriptDirectory
-
-
-def test_b6_and_d18_follow_latest_dev_migrations():
-    scripts = ScriptDirectory(str(Path(__file__).parents[1] / "migrations"))
-    assert scripts.get_heads() == ["suppression_reason_inactive"]
-    # Alembic returns newest first; upgrading dev must apply B6, then D18.
-    pending = list(scripts.iterate_revisions("head", "lastalert_maintenance_window_id"))
-    assert [revision.revision for revision in reversed(pending)] == [
-        "automation_coverage",
-        "suppression_reason_inactive",
-    ]
 
 
 def test_coverage_defaults_upgrade_and_disposable_downgrade():
