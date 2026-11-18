@@ -67,7 +67,7 @@ def engine(tmp_path):
 
 def test_revision_chain(migration):
     assert migration.revision == "add_dashboard_image"
-    assert migration.down_revision == "derive_alert_suppression"
+    assert migration.down_revision == "merge_automations_preset_tag"
 
 
 def test_upgrade_creates_table_columns_and_nullability(engine, migration):
