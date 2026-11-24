@@ -1,9 +1,9 @@
 """The assistant DDL in this repo must match the golden schema fixture.
 
 The migration that creates the assistant tables lives here, the ORM models that
-use them live in keep-assistant, and nothing runs both.
+use them live in keep-api-gateway, and nothing runs both.
 ``tests/fixtures/assistant_schema.json`` is the shared reference: vendored
-byte-identically into keep-assistant, which asserts its models against its own
+byte-identically into keep-api-gateway, which asserts its models against its own
 copy. Same arrangement as tests/test_automation_schema_fixture.py, which
 explains why the declared schema objects are compared (PostgreSQL dialect,
 offline) rather than a reflected SQLite database.
@@ -11,7 +11,7 @@ offline) rather than a reflected SQLite database.
 Besides the comparison, this file checks the fixture itself (a regenerated
 golden that lost the identity on ``seq`` would still equal a migration that lost
 it) and checks that the helper reads Postgres' reflected spelling of this schema
-back to the same normal form, which is what keep-assistant relies on.
+back to the same normal form, which is what keep-api-gateway relies on.
 """
 
 import io
@@ -128,7 +128,7 @@ def test_fixture_has_exactly_the_compared_sections():
 @pytest.mark.parametrize("section", SECTIONS)
 def test_migration_matches_golden_fixture(migration_dump, table, section):
     """A failure means production DDL and the fixture disagree. Fix whichever is
-    wrong; a fixture change goes into keep-assistant's copy too."""
+    wrong; a fixture change goes into keep-api-gateway's copy too."""
     assert migration_dump[table][section] == GOLDEN[table][section]
 
 

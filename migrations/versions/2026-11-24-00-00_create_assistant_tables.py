@@ -1,8 +1,9 @@
 """create the Keep Assistant tables: conversation, draft and message
 
-keep-assistant is the only reader and writer, and its ORM models must match
-these tables. They are deliberately not registered in the gateway's
-`all_models.py`: keep-assistant's own `/readyz` checks them.
+The gateway's assistant package is the only reader and writer, and its ORM models
+must match these tables. They are deliberately not registered in the gateway's
+`all_models.py`: without them the gateway stays ready and only its assistant
+routes answer 503.
 
 TENANCY. Every table carries `tenant_id` NOT NULL with an FK to `tenant.id`. The
 composite FK `(conversation_id, tenant_id)` also makes a child row whose tenant
@@ -96,7 +97,7 @@ def upgrade() -> None:
         sa.Column("tenant_id", sa.String(), nullable=False),
         sa.Column("conversation_id", sa.Uuid(), nullable=False),
         sa.Column("created_by", sa.Text(), nullable=False),
-        # The tool that produced the draft. An open set owned by keep-assistant's
+        # The tool that produced the draft. An open set owned by the assistant's
         # tool registry, so there is no CHECK.
         sa.Column("kind", sa.Text(), nullable=False),
         sa.Column("state", sa.Text(), nullable=False, server_default="pending"),

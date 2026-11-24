@@ -1,9 +1,9 @@
 """Normalized dump of the Keep Assistant schema.
 
-VENDORED BYTE-IDENTICALLY into keep-assistant, together with its golden fixture
+VENDORED BYTE-IDENTICALLY into keep-api-gateway, together with its golden fixture
 ``assistant_schema.json``, at the same path (``tests/fixtures/``). Neither repo's
 CI checks out the other, so each asserts against its own copy: keep-migrations
-checks the migration, keep-assistant checks its ORM models. Any schema change
+checks the migration, keep-api-gateway checks its ORM models. Any schema change
 updates the migration, the models, and BOTH copies in the same change set.
 
 Two sources, one normal form: ``dump_from_tables`` reads the schema objects a
